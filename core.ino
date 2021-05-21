@@ -1,10 +1,14 @@
 /*
-  Moura's Keyboard Scanner, copyright (C) 2017 Daniel Moura <oxe@oxesoft.com>
-  Modified and expanded by Alessandro Guttenberg guttenba@gmail.com, April 2021
-
- */
+  based around Moura's Keyboard Scanner, copyright (C) 2017 Daniel Moura <oxe@oxesoft.com>
+  Modified and expanded for use as a MIDI/analog controller for the Behringer Model D by Alessandro Guttenberg <guttenba@gmail.com>, May 2021
+  Features:
+  Keyscanner (as implemented: for 49 key Fatar keybed)
+  MIDI (note on/off, velocity, channel pressure, pitch, mod)
+  Analog CV: gate, trig, channel pressure (0-4V), velocity (0-4v)
+*/
 
 #include <DIO2.h>
+#include <SPI.h>
 
 #define KEYS_NUMBER 49
 
@@ -13,35 +17,34 @@
 #define KEY_ON                2
 #define KEY_RELEASED          3
 
-
 #define MIN_TIME_MS   3
 #define MAX_TIME_MS   50
 #define MAX_TIME_MS_N (MAX_TIME_MS - MIN_TIME_MS)
 
-#define FSR_PIN A0 // Force Sensitive Resistor (ribbon), with pull-down resistor
+#define FSR   A0 // Force Sensitive Resistor (ribbon), with pull-down resistor
+#define GATE  6
+#define TRIG  7
+#define DAC  8
 
 //Lower Ribbon
-#define PIN_A1  50
-#define PIN_A2  48
-#define PIN_A3  46
-#define PIN_A4  44
-#define PIN_A5  42
-#define PIN_A6  40
-#define PIN_A7  38
-#define PIN_A8  36
+#define PIN_T1  50
+#define PIN_T2  48
+#define PIN_T3  46
+#define PIN_T4  44
+#define PIN_T5  42
+#define PIN_T6  40
+#define PIN_T7  38
+#define PIN_T8  36
 
 //Upper Ribbon
-#define PIN_A9 34
-#define PIN_A10 32
-#define PIN_A11 30
-#define PIN_A12 28
-#define PIN_A13 26
-#define PIN_A14 24
-#define PIN_A15 22
-#define PIN_A16 20
-
-
-
+#define PIN_T9  34
+#define PIN_T10 32
+#define PIN_T11 30
+#define PIN_T12 28
+#define PIN_T13 26
+#define PIN_T14 24
+#define PIN_T15 22
+#define PIN_T16 20
 
 //Lower Ribbon
 #define PIN_B3  47
@@ -49,127 +52,128 @@
 #define PIN_B5  43
 #define PIN_B6  41
 #define PIN_B7  39
-#define PIN_B8 37
+#define PIN_B8  37
+
 //Upper Ribbon
 #define PIN_B9  35
-#define PIN_B10  33
-#define PIN_B11  31
-#define PIN_B12  29
-#define PIN_B13  27
+#define PIN_B10 33
+#define PIN_B11 31
+#define PIN_B12 29
+#define PIN_B13 27
 #define PIN_B14 25
 #define PIN_B15 23
 #define PIN_B16 21
 
 byte input_pins[] = {
-  PIN_A5, //C1
-  PIN_A5,
-  PIN_A6,
-  PIN_A6,
-  PIN_A7,
-  PIN_A7,
-  PIN_A8,
-  PIN_A8,
-  PIN_A1,
-  PIN_A1,
-  PIN_A2,
-  PIN_A2,
-  PIN_A3,
-  PIN_A3,
-  PIN_A4,
-  PIN_A4,
-  PIN_A5,
-  PIN_A5,
-  PIN_A6,
-  PIN_A6,
-  PIN_A7,
-  PIN_A7,
-  PIN_A8,
-  PIN_A8,
-  PIN_A1, //C
-  PIN_A1,
-  PIN_A2,
-  PIN_A2,
-  PIN_A3,
-  PIN_A3,
-  PIN_A4,
-  PIN_A4,
-  PIN_A5,
-  PIN_A5,
-  PIN_A6,
-  PIN_A6,
-  PIN_A7,
-  PIN_A7,
-  PIN_A8,
-  PIN_A8,
-  PIN_A9,
-  PIN_A9,
-  PIN_A10,
-  PIN_A10,
-  PIN_A11,
-  PIN_A11,
-  PIN_A12,
-  PIN_A12,
-  PIN_A13,
-  PIN_A13,
-  PIN_A14,
-  PIN_A14,
-  PIN_A15,
-  PIN_A15,
-  PIN_A16,
-  PIN_A16,
-  PIN_A9,
-  PIN_A9,
-  PIN_A10,
-  PIN_A10,
-  PIN_A11,
-  PIN_A11,
-  PIN_A12,
-  PIN_A12,
-  PIN_A13,
-  PIN_A13,
-  PIN_A14,
-  PIN_A14,
-  PIN_A15,
-  PIN_A15,
-  PIN_A16,
-  PIN_A16,
-  PIN_A9,
-  PIN_A9,
-  PIN_A10,
-  PIN_A10,
-  PIN_A11,
-  PIN_A11,
-  PIN_A12,
-  PIN_A12,
-  PIN_A13,
-  PIN_A13,
-  PIN_A14,
-  PIN_A14,
-  PIN_A15,
-  PIN_A15,
-  PIN_A16,
-  PIN_A16,
-    PIN_A9,
-  PIN_A9,
-      PIN_A10,
-  PIN_A10,
-      PIN_A11,
-  PIN_A11,
-        PIN_A12,
-  PIN_A12,
-      PIN_A13,
-  PIN_A13
+  PIN_T5,
+  PIN_T5,
+  PIN_T6,
+  PIN_T6,
+  PIN_T7,
+  PIN_T7,
+  PIN_T8,
+  PIN_T8,
+  PIN_T1,
+  PIN_T1,
+  PIN_T2,
+  PIN_T2,
+  PIN_T3,
+  PIN_T3,
+  PIN_T4,
+  PIN_T4,
+  PIN_T5,
+  PIN_T5,
+  PIN_T6,
+  PIN_T6,
+  PIN_T7,
+  PIN_T7,
+  PIN_T8,
+  PIN_T8,
+  PIN_T1,
+  PIN_T1,
+  PIN_T2,
+  PIN_T2,
+  PIN_T3,
+  PIN_T3,
+  PIN_T4,
+  PIN_T4,
+  PIN_T5,
+  PIN_T5,
+  PIN_T6,
+  PIN_T6,
+  PIN_T7,
+  PIN_T7,
+  PIN_T8,
+  PIN_T8,
+  PIN_T9,
+  PIN_T9,
+  PIN_T10,
+  PIN_T10,
+  PIN_T11,
+  PIN_T11,
+  PIN_T12,
+  PIN_T12,
+  PIN_T13,
+  PIN_T13,
+  PIN_T14,
+  PIN_T14,
+  PIN_T15,
+  PIN_T15,
+  PIN_T16,
+  PIN_T16,
+  PIN_T9,
+  PIN_T9,
+  PIN_T10,
+  PIN_T10,
+  PIN_T11,
+  PIN_T11,
+  PIN_T12,
+  PIN_T12,
+  PIN_T13,
+  PIN_T13,
+  PIN_T14,
+  PIN_T14,
+  PIN_T15,
+  PIN_T15,
+  PIN_T16,
+  PIN_T16,
+  PIN_T9,
+  PIN_T9,
+  PIN_T10,
+  PIN_T10,
+  PIN_T11,
+  PIN_T11,
+  PIN_T12,
+  PIN_T12,
+  PIN_T13,
+  PIN_T13,
+  PIN_T14,
+  PIN_T14,
+  PIN_T15,
+  PIN_T15,
+  PIN_T16,
+  PIN_T16,
+  PIN_T9,
+  PIN_T9,
+  PIN_T10,
+  PIN_T10,
+  PIN_T11,
+  PIN_T11,
+  PIN_T12,
+  PIN_T12,
+  PIN_T13,
+  PIN_T13
 };
 
 byte output_pins[] = {
-  PIN_B4, //C1
-  PIN_B3,
   PIN_B4,
   PIN_B3,
   PIN_B4,
   PIN_B3,
   PIN_B4,
   PIN_B3,
+  PIN_B4,
+  PIN_B3,
   PIN_B6,
   PIN_B5,
   PIN_B6,
@@ -186,8 +190,6 @@ byte output_pins[] = {
   PIN_B5,
   PIN_B6,
   PIN_B5,
-  PIN_B8, //C
-  PIN_B7,
   PIN_B8,
   PIN_B7,
   PIN_B8,
@@ -202,6 +204,8 @@ byte output_pins[] = {
   PIN_B7,
   PIN_B8,
   PIN_B7,
+  PIN_B8,
+  PIN_B7,
   PIN_B10,
   PIN_B9,
   PIN_B10,
@@ -250,32 +254,26 @@ byte output_pins[] = {
   PIN_B13,
   PIN_B14,
   PIN_B13,
-        PIN_B16,
+  PIN_B16,
   PIN_B15,
-          PIN_B16,
+  PIN_B16,
   PIN_B15,
-          PIN_B16,
+  PIN_B16,
   PIN_B15,
-          PIN_B16,
+  PIN_B16,
   PIN_B15,
-          PIN_B16,
+  PIN_B16,
   PIN_B15,
-          PIN_B16,
+  PIN_B16,
   PIN_B15,
-          PIN_B16,
+  PIN_B16,
   PIN_B15,
-          PIN_B16,
+  PIN_B16,
   PIN_B15
-
 };
 
 //uncomment the next line to inspect the number of scans per seconds
 //#define DEBUG_SCANS_PER_SECOND
-
-/*
-  426 cyles per second (2,35ms per cycle) using standard digitalWrite/digitalRead
-  896 cyles per second (1,11ms per cycle) using DIO2 digitalWrite2/digitalRead2
-*/
 
 //uncoment the next line to get text midi message at output
 #define DEBUG_MIDI_MESSAGE
@@ -299,6 +297,8 @@ int averagePitch = 0;
 int averageMod = 0;
 int pitchMidPoint = 64;
 int pitchDeadZone = 4;
+unsigned long trigTimer = 0;
+
 
 void setup() {
 
@@ -307,6 +307,13 @@ void setup() {
 #else
   Serial.begin(31250);
 #endif
+
+  pinMode(GATE, OUTPUT);
+  pinMode(TRIG, OUTPUT);
+  pinMode(DAC, OUTPUT);
+  digitalWrite(GATE, LOW);
+  digitalWrite(TRIG, LOW);
+  digitalWrite(DAC, HIGH);
 
   pinMode(13, OUTPUT);
   digitalWrite(13, LOW);
@@ -325,18 +332,22 @@ void setup() {
     pinMode(input_pins[pin], INPUT_PULLUP);
   }
 
-  pinMode(FSR_PIN, INPUT);
+  pinMode(FSR, INPUT);
   fsrReading = 0;
 
-
+  //readd pin
   pitchWheelReading = 64;
 
+  //readd pin
   modWheelReading = 0;
 
   for (int thisReading = 0; thisReading < numReadings; thisReading++) {
     readingsPitch[thisReading] = 0;
     readingsMod[thisReading] = 0;
   }
+
+  SPI.begin();
+
 }
 
 void send_midi_note_event(int command, int key_index, unsigned long time)
@@ -350,20 +361,18 @@ void send_midi_note_event(int command, int key_index, unsigned long time)
   t -= MIN_TIME_MS;
   unsigned long velocity = 127 - (t * 127 / MAX_TIME_MS_N);
   int vel = (((velocity * velocity) >> 7) * velocity) >> 7;
-  int key = 12 + key_index; //octave switch in place of hardcoded number
+  int key = 12 + key_index;
 #ifdef DEBUG_MIDI_MESSAGE
   char out[32];
   sprintf(out, "%02X %d %03d %d", command, key, vel, time);
   Serial.println(out);
+  setVoltage(DAC, 1, 1, vel << 5);
+
 #else
   Serial.write(command);
   Serial.write(key);
   Serial.write(vel);
-  // only update velocity (volume) for Note On event
-  if (command == 144)
-  {
-    send_midi_cc_event(176, 7, vel);
-  }
+  setVoltage(DAC, 1, 1, vel << 5);
 #endif
 }
 
@@ -392,6 +401,21 @@ void send_midi_cc_event(int status_byte, int param1, int param2)
 #endif
 }
 
+void setVoltage(int dacpin, bool channel, bool gain, unsigned int mV)
+{
+  unsigned int command = channel ? 0x9000 : 0x1000;
+
+  command |= gain ? 0x0000 : 0x2000;
+  command |= (mV & 0x0FFF);
+
+  SPI.beginTransaction(SPISettings(8000000, MSBFIRST, SPI_MODE0));
+  digitalWrite(dacpin, LOW);
+  SPI.transfer(command >> 8);
+  SPI.transfer(command & 0xFF);
+  digitalWrite(dacpin, HIGH);
+  SPI.endTransaction();
+}
+
 
 void loop() {
 
@@ -409,8 +433,12 @@ void loop() {
   }
 #endif
 
-  totalPitch = totalPitch - readingsPitch[readIndex];
+  if ((trigTimer > 0) && (millis() - trigTimer > 20)) {
+    digitalWrite2(TRIG, LOW); // Set trigger low after 20 msec
+    trigTimer = 0;
+  }
 
+  totalPitch = totalPitch - readingsPitch[readIndex];
   totalMod = totalMod - readingsMod[readIndex];
 
   if ((readingsPitch[readIndex] >= pitchMidPoint - pitchDeadZone) && (readingsPitch[readIndex] <= pitchMidPoint + pitchDeadZone))
@@ -444,7 +472,7 @@ void loop() {
     modWheelReading = modWheelNewReading;
   }
 
-  fsrReading = map(analogRead(FSR_PIN), 0, 850, 0, 127);
+  fsrReading = map(analogRead(FSR), 0, 1023, 0, 127);
 
   boolean *s = signals;
   for (byte i = 0; i < KEYS_NUMBER * 2; i++)
@@ -463,9 +491,11 @@ void loop() {
   {
     for (byte state_index = 0; state_index < 2; state_index++)
     {
+
       switch (*state)
       {
         case KEY_OFF:
+
           if (state_index == 0 && *signal)
           {
             *state = KEY_START;
@@ -484,25 +514,34 @@ void loop() {
           {
             *state = KEY_ON;
             send_midi_note_event(144, key, millis() - *ktime);
+            digitalWrite2(TRIG, HIGH);
+            trigTimer = millis();
           }
           break;
         case KEY_ON:
-          //if (fsrReading > 0)
-          //{
-          //send_midi_pressure_event(208, fsrReading);
-          //}
+          digitalWrite2(GATE, HIGH); //remove for legato?
+
+          if (fsrReading > 0)
+          {
+            send_midi_pressure_event(208, fsrReading); // channel pressure via MIDI
+            setVoltage(DAC, 0, 1, fsrReading << 5); // channel pressure via DAC
+          }
           if (state_index == 1 && !*signal)
           {
-            //send_midi_pressure_event(208, 0);
+            //send_midi_pressure_event(208, 0); //ensure 0
+            //setVoltage(DAC, 1, 1, 0 << 5); // ensure 0
             *state = KEY_RELEASED;
             *ktime = millis();
           }
           break;
         case KEY_RELEASED:
+
           if (state_index == 0 && !*signal)
           {
             *state = KEY_OFF;
             send_midi_note_event(128, key, millis() - *ktime);
+            digitalWrite2(GATE, LOW);
+
           }
           break;
       }
