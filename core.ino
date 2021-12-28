@@ -1,16 +1,14 @@
 /*
-  based around Moura's Keyboard Scanner, copyright (C) 2017 Daniel Moura <oxe@oxesoft.com>
-  Modified and expanded for use as a MIDI/analog controller for the Behringer Model D by Alessandro Guttenberg <guttenba@gmail.com>, May 2021
-  Features:
-  Keyscanner (as implemented: for 49 key Fatar keybed)
-  MIDI (note on/off, velocity, channel pressure, pitch, mod)
-  Analog CV: gate, trig, channel pressure (0-4V), velocity (0-4v)
+Guinguin MME DAC CV Controller
+Alessandro Guttenberg <guttenba@gmail.com>, May 2021
 */
 
 #include <DIO2.h>
 #include <SPI.h>
 
 #define KEYS_NUMBER 49
+
+#define NOTE_SF 47.069f // This value can be tuned if CV output isn't exactly 1V/octave
 
 #define KEY_OFF               0
 #define KEY_START             1
@@ -22,9 +20,10 @@
 #define MAX_TIME_MS_N (MAX_TIME_MS - MIN_TIME_MS)
 
 #define FSR   A0 // Force Sensitive Resistor (ribbon), with pull-down resistor
-#define GATE  6
-#define TRIG  7
-#define DAC  8
+#define PITCH_WHEEL A1
+#define GATE  5
+#define DAC1  8
+#define DAC2  9
 
 //Lower Ribbon
 #define PIN_T1  50
@@ -275,30 +274,14 @@ byte output_pins[] = {
 //uncomment the next line to inspect the number of scans per seconds
 //#define DEBUG_SCANS_PER_SECOND
 
-//uncoment the next line to get text midi message at output
+//uncomment the next line to get text midi message at output
 #define DEBUG_MIDI_MESSAGE
 
 byte          keys_state[KEYS_NUMBER];
 unsigned long keys_time[KEYS_NUMBER];
 boolean       signals[KEYS_NUMBER * 2];
-byte          fsrReading;      // the analog reading from the FSR resistor divider
+byte          fsrReading;
 byte          pitchWheelReading;
-byte          modWheelReading;
-byte          pitchWheelNewReading;
-byte          modWheelNewReading;
-
-const int numReadings = 10;
-int readingsPitch[numReadings];
-int readingsMod[numReadings];
-int readIndex = 0;
-int totalPitch = 0;
-int totalMod = 0;
-int averagePitch = 0;
-int averageMod = 0;
-int pitchMidPoint = 64;
-int pitchDeadZone = 4;
-unsigned long trigTimer = 0;
-
 
 void setup() {
 
@@ -309,14 +292,14 @@ void setup() {
 #endif
 
   pinMode(GATE, OUTPUT);
-  pinMode(TRIG, OUTPUT);
-  pinMode(DAC, OUTPUT);
-  digitalWrite(GATE, LOW);
-  digitalWrite(TRIG, LOW);
-  digitalWrite(DAC, HIGH);
+  pinMode(DAC1, OUTPUT);
+  pinMode(DAC2, OUTPUT);
+  digitalWrite2(GATE, LOW);
+  digitalWrite2(DAC1, HIGH);
+  digitalWrite2(DAC2, HIGH);
 
   pinMode(13, OUTPUT);
-  digitalWrite(13, LOW);
+  digitalWrite2(13, LOW);
   int i;
   for (i = 0; i < KEYS_NUMBER; i++)
   {
@@ -335,16 +318,9 @@ void setup() {
   pinMode(FSR, INPUT);
   fsrReading = 0;
 
-  //readd pin
+  //read pin
+  pinMode(PITCH_WHEEL, INPUT);
   pitchWheelReading = 64;
-
-  //readd pin
-  modWheelReading = 0;
-
-  for (int thisReading = 0; thisReading < numReadings; thisReading++) {
-    readingsPitch[thisReading] = 0;
-    readingsMod[thisReading] = 0;
-  }
 
   SPI.begin();
 
@@ -365,29 +341,49 @@ void send_midi_note_event(int command, int key_index, unsigned long time)
 #ifdef DEBUG_MIDI_MESSAGE
   char out[32];
   sprintf(out, "%02X %d %03d %d", command, key, vel, time);
+
+  unsigned int mV = (unsigned int) ((float) key * NOTE_SF + 0.5); 
+  setVoltage(DAC2, 1, 1, mV);
+  setVoltage(DAC1, 1, 1, vel << 5);
   Serial.println(out);
-  setVoltage(DAC, 1, 1, vel << 5);
 
 #else
+  setVoltage(DAC1, 1, 1, vel << 5);
   Serial.write(command);
   Serial.write(key);
   Serial.write(vel);
-  setVoltage(DAC, 1, 1, vel << 5);
 #endif
 }
 
 void send_midi_pressure_event(int command, int pressure)
 {
 #ifdef DEBUG_MIDI_MESSAGE
+  setVoltage(DAC1, 0, 1, fsrReading << 5); // channel pressure via DAC
   char out[32];
   sprintf(out, "%02X %d", command, pressure);
   Serial.println(out);
 #else
+  setVoltage(DAC1, 0, 1, fsrReading << 5); // channel pressure via DAC
   Serial.write(command);
   Serial.write(pressure);
 #endif
 }
 
+void send_midi_cc_event(int command, int value)
+{
+#ifdef DEBUG_MIDI_MESSAGE
+  setVoltage(DAC2, 0, 1, pitchWheelReading << 5);
+  char out[32];
+  sprintf(out, "%02X %d", command, value);
+  Serial.println(out);
+#else
+  setVoltage(DAC2, 0, 1, pitchWheelReading << 5);
+  Serial.write(command);
+  Serial.write(pressure);
+#endif
+}
+
+/*
 void send_midi_cc_event(int status_byte, int param1, int param2)
 {
 #ifdef DEBUG_MIDI_MESSAGE
@@ -400,6 +396,7 @@ void send_midi_cc_event(int status_byte, int param1, int param2)
   Serial.write(param2);
 #endif
 }
+*/
 
 void setVoltage(int dacpin, bool channel, bool gain, unsigned int mV)
 {
@@ -409,10 +406,10 @@ void setVoltage(int dacpin, bool channel, bool gain, unsigned int mV)
   command |= (mV & 0x0FFF);
 
   SPI.beginTransaction(SPISettings(8000000, MSBFIRST, SPI_MODE0));
-  digitalWrite(dacpin, LOW);
+  digitalWrite2(dacpin, LOW);
   SPI.transfer(command >> 8);
   SPI.transfer(command & 0xFF);
-  digitalWrite(dacpin, HIGH);
+  digitalWrite2(dacpin, HIGH);
   SPI.endTransaction();
 }
 
@@ -433,45 +430,13 @@ void loop() {
   }
 #endif
 
-  if ((trigTimer > 0) && (millis() - trigTimer > 20)) {
-    digitalWrite2(TRIG, LOW); // Set trigger low after 20 msec
-    trigTimer = 0;
-  }
-
-  totalPitch = totalPitch - readingsPitch[readIndex];
-  totalMod = totalMod - readingsMod[readIndex];
-
-  if ((readingsPitch[readIndex] >= pitchMidPoint - pitchDeadZone) && (readingsPitch[readIndex] <= pitchMidPoint + pitchDeadZone))
+ 
+  pitchWheelReading = map(analogRead(PITCH_WHEEL), 0, 1023, 0, 127) ;
+  if ((pitchWheelReading >=68) && (pitchWheelReading<= 60))
   {
-    readingsPitch[readIndex] = pitchMidPoint;
+    send_midi_cc_event(176, pitchWheelReading);
   }
-
-  totalPitch = totalPitch + readingsPitch[readIndex];
-  totalMod = totalMod + readingsMod[readIndex];
-  readIndex = readIndex + 1;
-
-  if (readIndex >= numReadings)
-  {
-    readIndex = 0;
-  }
-
-  averagePitch = totalPitch / numReadings;
-  averageMod = totalMod / numReadings;
-
-  pitchWheelNewReading =  averagePitch;
-  if (pitchWheelNewReading != pitchWheelReading)
-  {
-    send_midi_cc_event(224, 0, pitchWheelNewReading);
-    pitchWheelReading = pitchWheelNewReading;
-  }
-
-  modWheelNewReading =  averageMod;
-  if (modWheelNewReading != modWheelReading)
-  {
-    send_midi_cc_event(176, 1, modWheelNewReading);
-    modWheelReading = modWheelNewReading;
-  }
-
+  
   fsrReading = map(analogRead(FSR), 0, 1023, 0, 127);
 
   boolean *s = signals;
@@ -514,8 +479,7 @@ void loop() {
           {
             *state = KEY_ON;
             send_midi_note_event(144, key, millis() - *ktime);
-            digitalWrite2(TRIG, HIGH);
-            trigTimer = millis();
+            //digitalWrite2(TRIG, HIGH);
           }
           break;
         case KEY_ON:
@@ -524,12 +488,11 @@ void loop() {
           if (fsrReading > 0)
           {
             send_midi_pressure_event(208, fsrReading); // channel pressure via MIDI
-            setVoltage(DAC, 0, 1, fsrReading << 5); // channel pressure via DAC
           }
           if (state_index == 1 && !*signal)
           {
             //send_midi_pressure_event(208, 0); //ensure 0
-            //setVoltage(DAC, 1, 1, 0 << 5); // ensure 0
+            //setVoltage(DAC, 0, 1, 0 << 5); // ensure 0
             *state = KEY_RELEASED;
             *ktime = millis();
           }
