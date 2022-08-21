@@ -1,14 +1,17 @@
 /*
-Guinguin MME DAC CV Controller
+Guinguin MME Keyscanner and MIDI Controller
 Alessandro Guttenberg <guttenba@gmail.com>, May 2021
 */
 
 #include <DIO2.h>
 #include <SPI.h>
+#include <MIDI.h>
+
+MIDI_CREATE_DEFAULT_INSTANCE();
+
+#define chan 1
 
 #define KEYS_NUMBER 49
-
-#define NOTE_SF 47.069f // This value can be tuned if CV output isn't exactly 1V/octave
 
 #define KEY_OFF               0
 #define KEY_START             1
@@ -16,14 +19,9 @@ Alessandro Guttenberg <guttenba@gmail.com>, May 2021
 #define KEY_RELEASED          3
 
 #define MIN_TIME_MS   3
-#define MAX_TIME_MS   50
+#define MAX_TIME_MS   350
 #define MAX_TIME_MS_N (MAX_TIME_MS - MIN_TIME_MS)
 
-#define FSR   A0 // Force Sensitive Resistor (ribbon), with pull-down resistor
-#define PITCH_WHEEL A1
-#define GATE  5
-#define DAC1  8
-#define DAC2  9
 
 //Lower Ribbon
 #define PIN_T1  50
@@ -280,26 +278,25 @@ byte output_pins[] = {
 byte          keys_state[KEYS_NUMBER];
 unsigned long keys_time[KEYS_NUMBER];
 boolean       signals[KEYS_NUMBER * 2];
-byte          fsrReading;
-byte          pitchWheelReading;
+
+//pitch pot range: 377 to 653
+//mod pot range:   369 to 643
+
+int lastAnalogBendValue;
+int lastAnalogModValue;
 
 void setup() {
 
-#ifdef DEBUG_MIDI_MESSAGE
-  Serial.begin(115200);
-#else
-  Serial.begin(31250);
-#endif
+  MIDI.begin (MIDI_CHANNEL_OMNI); 
 
-  pinMode(GATE, OUTPUT);
-  pinMode(DAC1, OUTPUT);
-  pinMode(DAC2, OUTPUT);
-  digitalWrite2(GATE, LOW);
-  digitalWrite2(DAC1, HIGH);
-  digitalWrite2(DAC2, HIGH);
+  #ifdef DEBUG_MIDI_MESSAGE
+    Serial.begin(115200);
+  #else
+    Serial.begin(31250);
+  #endif
 
-  pinMode(13, OUTPUT);
-  digitalWrite2(13, LOW);
+  //pinMode(13, OUTPUT);
+  //digitalWrite2(13, LOW);
   int i;
   for (i = 0; i < KEYS_NUMBER; i++)
   {
@@ -314,13 +311,6 @@ void setup() {
   {
     pinMode(input_pins[pin], INPUT_PULLUP);
   }
-
-  pinMode(FSR, INPUT);
-  fsrReading = 0;
-
-  //read pin
-  pinMode(PITCH_WHEEL, INPUT);
-  pitchWheelReading = 64;
 
   SPI.begin();
 
@@ -338,81 +328,20 @@ void send_midi_note_event(int command, int key_index, unsigned long time)
   unsigned long velocity = 127 - (t * 127 / MAX_TIME_MS_N);
   int vel = (((velocity * velocity) >> 7) * velocity) >> 7;
   int key = 12 + key_index;
+  
 #ifdef DEBUG_MIDI_MESSAGE
   char out[32];
   sprintf(out, "%02X %d %03d %d", command, key, vel, time);
-
-  unsigned int mV = (unsigned int) ((float) key * NOTE_SF + 0.5); 
-  setVoltage(DAC2, 1, 1, mV);
-  setVoltage(DAC1, 1, 1, vel << 5);
-  Serial.println(out);
-
-#else
-  setVoltage(DAC1, 1, 1, vel << 5);
-  Serial.write(command);
-  Serial.write(key);
-  Serial.write(vel);
-#endif
-}
-
-void send_midi_pressure_event(int command, int pressure)
-{
-#ifdef DEBUG_MIDI_MESSAGE
-  setVoltage(DAC1, 0, 1, fsrReading << 5); // channel pressure via DAC
-  char out[32];
-  sprintf(out, "%02X %d", command, pressure);
   Serial.println(out);
 #else
-  setVoltage(DAC1, 0, 1, fsrReading << 5); // channel pressure via DAC
-  Serial.write(command);
-  Serial.write(pressure);
+  if(command = 144){
+    MIDI.sendNoteOn(key,vel,chan);
+  }
+  else{
+    MIDI.sendNoteOff(key,vel,chan);
+  }
 #endif
 }
-
-void send_midi_cc_event(int command, int value)
-{
-#ifdef DEBUG_MIDI_MESSAGE
-  setVoltage(DAC2, 0, 1, pitchWheelReading << 5);
-  char out[32];
-  sprintf(out, "%02X %d", command, value);
-  Serial.println(out);
-#else
-  setVoltage(DAC2, 0, 1, pitchWheelReading << 5);
-  Serial.write(command);
-  Serial.write(pressure);
-#endif
-}
-
-/*
-void send_midi_cc_event(int status_byte, int param1, int param2)
-{
-#ifdef DEBUG_MIDI_MESSAGE
-  char out[32];
-  sprintf(out, "%02X %d %d", status_byte, param1, param2);
-  Serial.println(out);
-#else
-  Serial.write(status_byte);
-  Serial.write(param1);
-  Serial.write(param2);
-#endif
-}
-*/
-
-void setVoltage(int dacpin, bool channel, bool gain, unsigned int mV)
-{
-  unsigned int command = channel ? 0x9000 : 0x1000;
-
-  command |= gain ? 0x0000 : 0x2000;
-  command |= (mV & 0x0FFF);
-
-  SPI.beginTransaction(SPISettings(8000000, MSBFIRST, SPI_MODE0));
-  digitalWrite2(dacpin, LOW);
-  SPI.transfer(command >> 8);
-  SPI.transfer(command & 0xFF);
-  digitalWrite2(dacpin, HIGH);
-  SPI.endTransaction();
-}
-
 
 void loop() {
 
@@ -430,14 +359,27 @@ void loop() {
   }
 #endif
 
- 
-  pitchWheelReading = map(analogRead(PITCH_WHEEL), 0, 1023, 0, 127) ;
-  if ((pitchWheelReading >=68) && (pitchWheelReading<= 60))
-  {
-    send_midi_cc_event(176, pitchWheelReading);
+  int analogModValue = map(analogRead(A1),369, 643, 0, 127); //invert mapping for opposite direction
+  if (abs(analogModValue-lastAnalogModValue) > 1)  { // have we moved enough to avoid analog jitter?
+      lastAnalogModValue = analogModValue;
+      #ifdef DEBUG_MIDI_MESSAGE
+        Serial.println(analogModValue);
+      #else
+        MIDI.sendControlChange(1, analogModValue, 1);
+      #endif
   }
   
-  fsrReading = map(analogRead(FSR), 0, 1023, 0, 127);
+  int analogBendValue = analogRead(A3) - 510; // 0 at mid point
+  if (abs(analogBendValue-lastAnalogBendValue) > 1)  { // have we moved enough to avoid analog jitter?
+    if (abs(analogBendValue) > 4) { // are we out of the central dead zone?
+      lastAnalogBendValue = analogBendValue;
+      #ifdef DEBUG_MIDI_MESSAGE
+        Serial.println(8*analogBendValue);
+      #else
+        MIDI.sendPitchBend(8*analogBendValue, 1); // or -8 depending which way you want to go up and down 
+      #endif    
+    }
+   }
 
   boolean *s = signals;
   for (byte i = 0; i < KEYS_NUMBER * 2; i++)
@@ -479,31 +421,21 @@ void loop() {
           {
             *state = KEY_ON;
             send_midi_note_event(144, key, millis() - *ktime);
-            //digitalWrite2(TRIG, HIGH);
           }
           break;
         case KEY_ON:
-          digitalWrite2(GATE, HIGH); //remove for legato?
-
-          if (fsrReading > 0)
-          {
-            send_midi_pressure_event(208, fsrReading); // channel pressure via MIDI
-          }
+          //digitalWrite2(GATE, HIGH); 
           if (state_index == 1 && !*signal)
           {
-            //send_midi_pressure_event(208, 0); //ensure 0
-            //setVoltage(DAC, 0, 1, 0 << 5); // ensure 0
             *state = KEY_RELEASED;
             *ktime = millis();
           }
           break;
         case KEY_RELEASED:
-
           if (state_index == 0 && !*signal)
           {
             *state = KEY_OFF;
             send_midi_note_event(128, key, millis() - *ktime);
-            digitalWrite2(GATE, LOW);
 
           }
           break;
